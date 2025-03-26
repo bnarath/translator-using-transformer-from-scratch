@@ -25,20 +25,19 @@ I chose **Malayalam** for this project as it is my native language and presents 
 
 ### 1. Data Preprocessing
 
-*   **Dataset:** The `ai4bharat/samanantar` dataset from HuggingFace was used, containing approximately 5 million English-Malayalam sentence pairs. This dataset consists of English-to-Indic language pairs, specifically designed for machine translation tasks. For resource efficiency, I’ve limited the dataset to approximately 1 million pairs for training and 100K for validation to reduce  the training cost. (if you have resources, better use the entire data)
+**Dataset:** The `ai4bharat/samanantar` dataset from HuggingFace was used, containing approximately 5 million English-Malayalam sentence pairs. This dataset consists of English-to-Indic language pairs, specifically designed for machine translation tasks. For resource efficiency, I’ve limited the dataset to approximately 1 million pairs for training and 100K for validation to reduce  the training cost. (if you have resources, better use the entire data)
 
-*   **Tokenization:**
+### 2. Tokenization
 
 Every printable character in any language has a unique Unicode code point. There are about [**155K Unicode code points**](https://en.wikipedia.org/wiki/List_of_Unicode_characters). These code points can be encoded using UTF-8, UTF-16, or UTF-32. Among them, **UTF-8** is the most efficient because it uses **1 byte** for ASCII characters, while other characters can take up to **3 bytes**.  
-
+    
 We begin by converting the UTF-8 bytes into integers as the starting tokens. Our initial vocabulary size will be **256** since each byte is represented by 8 bits, and there are **2^8 = 256** possible values.  
 
 The target vocabulary size is fixed at **500**. This means we will add 254 more tokens (and stop the process). In practice, this can be set to a much larger number, such as **50K** (this is a hyperparameter).  
 
-*Note: GPT-4 utilizes a tokenizer known as **cl100k_base**, which includes **100,256 tokens**, excluding special tokens.*
-T
+*Note: GPT-4 utilizes a tokenizer known as **cl100k_base**, which includes about **100K tokens**.
 
-### **Byte Pair Encoding (BPE)**  
+**Byte Pair Encoding (BPE)**  
 BPE works in two main steps:
 1. **Find the most frequent consecutive token pairs**.
 2. **Assign a new token ID** to the pair and replace any occurrences of the original tokens with the new ID.
@@ -49,7 +48,7 @@ Once the BPE model is trained, we create the token encoder and decoder based on 
 
 
 
-## 2. Transformer Architecture
+## 3. Transformer Architecture
 This section explains the components of the Transformer architecture used for this project.
 
 ![transformer_architecture](fig/transformer_architecture.png)
@@ -176,11 +175,11 @@ If you use this project or related methods, please cite the [original Transforme
   - The Adam optimizer is used with it's default learning rate to minimize the loss function.
   
 
-## Implementation Details
+## 4. Implementation Details
 <span style="color:red">TBD</span>
 
 
-## To Run:
+## 5. To Run:
 ```
 # Clone the Repository:
 git clone https://github.com/bnarath/transformer-from-scratch.git
