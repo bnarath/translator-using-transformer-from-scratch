@@ -40,7 +40,7 @@ The target vocabulary size is fixed at **500**. This means we will add 254 more 
 **Byte Pair Encoding (BPE)**  
 BPE works in two main steps:
 1. **Find the most frequent consecutive token pairs**.
-2. **Assign a new token ID** to the pair and replace any occurrences of the original tokens with the new ID.
+2. **Assign a new token ID** to the pair and replace any subsequent occurrences of the original tokens with the new ID.
 
 With each merge, the vocabulary grows, and the corpus is compressed.  
 

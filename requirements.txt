@@ -1,14 +1,5 @@
-# datasets==3.4.0
-# tensorflow==2.18.0
-# torch==2.6.0
-# torchaudio==2.6.0
-# torchvision==0.21.0
-# jupyterlab==4.3.5
-# notebook==7.3.2
-
-# Use below for training using `us-docker.pkg.dev/vertex-ai/training/pytorch-gpu.2-4.py310:latest` image
-datasets
-torch
-fsspec
-gcsfs
-tensorboardX
+datasets==3.5.0
+torch==2.6.0
+fsspec==2024.12.0
+gcsfs==2024.12.0
+tensorboardX==2.6.2.2
