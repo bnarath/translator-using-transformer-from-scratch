@@ -176,7 +176,15 @@ If you use this project or related methods, please cite the [original Transforme
   
 
 ## 4. Implementation Details
-<span style="color:red">TBD</span>
+- Step1: Preprocessor.process:
+  - Retrieve the raw data.
+  - Split the raw train/test/validation data and save these as files.
+  - Discard invalid data where either src or tgt is not UTF-8 encodable.
+  - Perform BPE training using the training data.
+  - Save the BPE vocabulary map, reverse map, and related files for later use.
+
+- Step1: Translator.build()
+  - tbd
 
 
 ## 5. To Run:
