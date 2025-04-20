@@ -4,12 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.preprocess import BatchTokenizer, SentenceEmbedding
+from src.preprocess import BatchPadder, SentenceEmbedding
 from config.data_dictionary import Encoder_Enum, Train, HuggingFaceData
-
-
-def get_device():
-    return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
 class Encoder(nn.Module):
@@ -21,7 +17,6 @@ class Encoder(nn.Module):
         hidden_dim,
         drop_prob,
         max_seq_length,
-        vocab_to_index,
         PADDING_TOKEN,
     ):
         super().__init__()
@@ -31,12 +26,10 @@ class Encoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.drop_prob = drop_prob
         self.max_seq_length = max_seq_length
-        self.vocab_to_index = vocab_to_index
         self.PADDING_TOKEN = PADDING_TOKEN
         self.sentence_embedding = SentenceEmbedding(
             self.max_seq_length,
             self.d_model,
-            self.vocab_to_index,
             self.drop_prob,
             self.PADDING_TOKEN,
         )
@@ -47,7 +40,7 @@ class Encoder(nn.Module):
             ]
         )  # Note: Sequential APPLIES the layers in order unlike modulelist layer
 
-    def forward(self, x, mask, start_token=False, end_token=False):
+    def forward(self, x, mask):
         # x: (64, 300)
         x = self.sentence_embedding(x)  # 64, 300, 512
         # Sequential layer takes only one input, hence to use mask, we need to iterate
@@ -172,17 +165,16 @@ if __name__ == "__main__":
     import pickle
     from config.data_dictionary import ROOT
     from pathlib import Path
-    from config.data_dictionary import (
-        START_TOKEN,
-        END_TOKEN,
-        PADDING_TOKEN,
-        UNKNOWN_TOKEN,
-    )
+    from config.data_dictionary import START_TOKEN, END_TOKEN, PADDING_TOKEN
+    from src.preprocess import BPE
 
-    fp = ROOT / Path("result/preprocessor.pkl")
+    fp = ROOT / Path("result/bpe.pkl")
     with open(fp, "rb") as f:
-        preprocessor = pickle.load(f)
-    print(preprocessor.eng_vocab_to_index)
+        bpe_artifacts = pickle.load(f)
+    bpe = BPE(corpus=[])
+    bpe.map = bpe_artifacts["map"]
+    bpe.reverse_map = bpe_artifacts["reverse_map"]
+    bpe.vocab_size = bpe_artifacts["vocab_size"]
 
     encoder = Encoder(
         num_layers=Encoder_Enum.num_layers.value,
@@ -191,7 +183,6 @@ if __name__ == "__main__":
         hidden_dim=Encoder_Enum.hidden_dim.value,
         drop_prob=Encoder_Enum.drop_prob.value,
         max_seq_length=HuggingFaceData.max_length.value,
-        vocab_to_index=preprocessor.eng_vocab_to_index,
         PADDING_TOKEN=PADDING_TOKEN,
     )
 
@@ -268,17 +259,17 @@ if __name__ == "__main__":
         "He helped an old man cross the street.",
     ]
 
-    src_batch_tokenizer = BatchTokenizer(
+    batch_tokens = [bpe.encode(sent) for sent in batch_sentences]
+
+    src_batch_tokenizer = BatchPadder(
         HuggingFaceData.max_length.value,
-        preprocessor.eng_vocab_to_index,
         START_TOKEN,
         END_TOKEN,
         PADDING_TOKEN,
-        UNKNOWN_TOKEN,
     )
 
     x = src_batch_tokenizer(
-        batch_sentences, start_token=False, end_token=False
+        batch_tokens, start_token=False, end_token=False
     )  # (64, 300)
 
-    print(encoder(x, mask, start_token=False, end_token=False).shape)
+    print(encoder(x, mask).shape)
