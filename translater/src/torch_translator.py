@@ -219,9 +219,9 @@ class Translator:
                 self.transformer.train()
                 src, tgt = batch  # (64, 300), (64, 300)
 
-                src.to(self.device)  # (64, 300)
+                src = src.to(self.device)  # (64, 300)
 
-                tgt.to(self.device)  # (64, 300)
+                tgt = tgt.to(self.device)  # (64, 300)
 
                 (
                     encoder_self_attention_mask,
@@ -529,13 +529,13 @@ class Translator:
             for batch in self.val_dataloader:
                 src, tgt, label = batch
 
-                src.to(self.device)
+                src = src.to(self.device)
                 # (64, 300)
 
-                tgt.to(self.device)
+                tgt = tgt.to(self.device)
                 # (64, 300)
 
-                label.to(self.device)
+                label = label.to(self.device)
                 # (64, 300)
 
                 (
