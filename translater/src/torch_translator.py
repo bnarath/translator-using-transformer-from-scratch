@@ -4,23 +4,24 @@ import torch
 import torch.nn as nn
 import fsspec
 
-from src.preprocess import Preprocessor, BatchTokenizer
+from src.preprocess import Processor, BatchPadder, BPE
 from src.torch_transformer import Transformer
+from data.retrieve import Retriever
+from utils.utils import get_device
 
 # from utils.print import display_first_n_batch
-from config.data_dictionary import (
-    ROOT,
-    HuggingFaceData,
-    Train,
-    Decoder_Enum,
-)
+from config.data_dictionary import ROOT, HuggingFaceData, Train, Decoder_Enum, BPE_Enum
 from torch.utils.data import DataLoader, Dataset
-from utils.utils import get_checkpoint_path, get_log_dir
+from utils.utils import (
+    get_checkpoint_path,
+    get_log_dir,
+    get_bpe_path,
+    get_preprocessor_path,
+)
 from config.data_dictionary import (
     START_TOKEN,
     END_TOKEN,
     PADDING_TOKEN,
-    UNKNOWN_TOKEN,
     NEG_INFINITY,
 )
 
@@ -31,7 +32,7 @@ import os
 import pickle
 import time
 import logging
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Literal
 
 torch.manual_seed(Train.seed.value)
 
@@ -43,14 +44,10 @@ class Translator:
         batch_size=Train.batch_size.value,
         num_epochs=Train.num_epochs.value,
     ):
-        self.framework = "pytorch"
-        self.type = "letter_by_letter"
         self.checkpoint_path = get_checkpoint_path()
         self.log_dir = get_log_dir()
         self.writer = SummaryWriter(log_dir=self.log_dir)
-        self.device = (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
+        self.device = get_device()
         self.device_count = torch.cuda.device_count()
 
         self.learning_rate = learning_rate
@@ -66,34 +63,21 @@ class Translator:
         self.START_TOKEN = START_TOKEN
         self.END_TOKEN = END_TOKEN
         self.PADDING_TOKEN = PADDING_TOKEN
-        self.UNKNOWN_TOKEN = UNKNOWN_TOKEN
         self.NEG_INFINITY = NEG_INFINITY
+        self.special_tokens = BPE_Enum.special_tokens.value
 
         # Data, Vocabulary, training & test dataloader with batches
-        self.ml_vocab_to_index = None
-        self.ml_index_to_vocab = None
-        self.eng_vocab_to_index = None
-        self.eng_index_to_vocab = None
+        self.bpe = self.get_bpe()
+
+        self.batch_padder = BatchPadder(
+            self.max_seq_length,
+            self.START_TOKEN,
+            self.END_TOKEN,
+            self.PADDING_TOKEN,
+        )
         self.train_dataloader, self.val_dataloader, self.test_dataloader = (
             self.get_input()
-        )  # Each batch is [[(64 src, 64 tgt)]]
-        self.src_batch_tokenizer = BatchTokenizer(
-            self.max_seq_length,
-            self.eng_vocab_to_index,
-            self.START_TOKEN,
-            self.END_TOKEN,
-            self.PADDING_TOKEN,
-            self.UNKNOWN_TOKEN,
-        )
-
-        self.tgt_batch_tokenizer = BatchTokenizer(
-            self.max_seq_length,
-            self.ml_vocab_to_index,
-            self.START_TOKEN,
-            self.END_TOKEN,
-            self.PADDING_TOKEN,
-            self.UNKNOWN_TOKEN,
-        )
+        )  # Each batch is [[(64, src, 64 tgt)]] where src and tgt are encoded sendences List of integers (variable lengths)
 
         self.transformer = Transformer(
             num_layers=self.num_layers,
@@ -102,8 +86,6 @@ class Translator:
             hidden_dim=self.hidden_dim,
             drop_prob=self.drop_prob,
             max_seq_length=self.max_seq_length,
-            src_vocab_to_index=self.eng_vocab_to_index,
-            tgt_vocab_to_index=self.ml_vocab_to_index,
             PADDING_TOKEN=self.PADDING_TOKEN,
         )
 
@@ -120,7 +102,7 @@ class Translator:
         self.transformer.to(device=self.device)
 
         self.loss = nn.CrossEntropyLoss(
-            ignore_index=self.ml_vocab_to_index[self.PADDING_TOKEN], reduction="none"
+            ignore_index=self.special_tokens[self.PADDING_TOKEN], reduction="none"
         )
 
         # expect logits as input : (batch, max_sequence_len, tgt vocab size)
@@ -166,6 +148,38 @@ class Translator:
             verbose=True,
         )
 
+    def get_collate_fn(self, type: Literal["train", "val", "test"]):
+        """Used inside dataloader to collate batches as equal len with padding"""
+
+        if type == "train":
+
+            def collate_fn(batch):
+                src_batch, tgt_batch = zip(*batch)
+                src_padded = self.batch_padder(
+                    src_batch, start_token=False, end_token=False
+                )
+                tgt_padded = self.batch_padder(
+                    tgt_batch, start_token=False, end_token=True
+                )
+                return src_padded, tgt_padded
+
+        else:  # ["val", "test"]
+
+            def collate_fn(batch):
+                src_batch, tgt_batch = zip(*batch)
+                src_padded = self.batch_padder(
+                    src_batch, start_token=False, end_token=False
+                )
+                tgt_padded = self.batch_padder(
+                    tgt_batch, start_token=True, end_token=False
+                )
+                label_padded = self.batch_padder(
+                    tgt_batch, start_token=False, end_token=True
+                )
+                return src_padded, tgt_padded, label_padded
+
+        return collate_fn
+
     def build(self):
         # logging.info(self.transformer)
         # logging.info(list(self.transformer.parameters()))
@@ -203,19 +217,11 @@ class Translator:
                 # batch : [(64, ), (64, )]
                 # self.transformer.train()  # Train mode : Dropout, Batch norm on (Batch norm not applicable in our case)
                 self.transformer.train()
-                src, tgt = batch  # (64, ), (64, )
+                src, tgt = batch  # (64, 300), (64, 300)
 
-                src_tokenized = self.src_batch_tokenizer(
-                    src, start_token=False, end_token=False
-                ).to(
-                    self.device
-                )  # (64, 300)
+                src.to(self.device)  # (64, 300)
 
-                tgt_tokenized = self.tgt_batch_tokenizer(
-                    tgt, start_token=True, end_token=False
-                ).to(
-                    self.device
-                )  # (64, 300)
+                tgt.to(self.device)  # (64, 300)
 
                 (
                     encoder_self_attention_mask,
@@ -223,31 +229,31 @@ class Translator:
                     decoder_cross_attention_mask,
                 ) = self.create_masks(
                     (
-                        src_tokenized,
-                        tgt_tokenized,
+                        src,
+                        tgt,
                     ),  # [(64, 300), (64, 300)],
                     self.max_seq_length,
-                    self.eng_vocab_to_index[self.PADDING_TOKEN],
-                    self.ml_vocab_to_index[self.PADDING_TOKEN],
+                    self.special_tokens[self.PADDING_TOKEN],
+                    self.special_tokens[self.PADDING_TOKEN],
                 )
 
                 self.optimizer.zero_grad()  # resets gradient
                 logits = self.transformer(
-                    src_tokenized,
-                    tgt_tokenized,
+                    src,
+                    tgt,
                     encoder_self_attention_mask.to(self.device),
                     decoder_cross_attention_mask.to(self.device),
                     decoder_self_attention_mask.to(self.device),
                 ).to(self.device)
-                labels = self.tgt_batch_tokenizer(
-                    tgt, start_token=False, end_token=True
-                ).to(self.device)
+                labels = self.batch_padder(tgt, start_token=False, end_token=True).to(
+                    self.device
+                )
 
                 loss = self.loss(
                     logits.view(-1, logits.shape[-1]), labels.view(-1)
                 )  # flattens batch size, seq len
                 non_padding_indices = (
-                    labels.view(-1) != self.ml_vocab_to_index[self.PADDING_TOKEN]
+                    labels.view(-1) != self.special_tokens[self.PADDING_TOKEN]
                 ).to(self.device)
                 loss = (
                     loss.sum() / non_padding_indices.sum()
@@ -320,56 +326,68 @@ class Translator:
         # Close the TensorBoard writer
         self.writer.close()
 
+    def get_bpe(self) -> BPE:
+        """Retrieve the saved trained BPE object"""
+        path = get_bpe_path()
+        with open(path, "rb") as f:
+            bpe_artifacts = pickle.load(f)
+
+        bpe = BPE(corpus=[])
+        bpe.map = bpe_artifacts["map"]
+        bpe.reverse_map = bpe_artifacts["reverse_map"]
+
+        # Add special tokens to the reverse_map for decoding
+        bpe.reverse_map.update(
+            {
+                v: bytes(k.encode("utf-8"))
+                for k, v in BPE_Enum.special_tokens.value.items()
+            }
+        )
+
+        bpe.vocab_size = bpe_artifacts["vocab_size"]
+        return bpe
+
     def get_input(self) -> Tuple[DataLoader]:
-        """Torch dataset for training"""
-        preprocessor_path = ROOT / Path(HuggingFaceData.preprocessor_file.value)
-        preprocessor_dirpath = os.path.dirname(preprocessor_path)
-        if not os.path.exists(preprocessor_dirpath):
-            os.makedirs(preprocessor_dirpath, exist_ok=True)
+        """Torch dataset for training/ val/ test"""
 
-        if os.path.exists(preprocessor_path):
-            with open(preprocessor_path, "rb") as f:
-                preprocessor = pickle.load(f)
+        processor_path = get_preprocessor_path()
+        if os.path.exists(processor_path):
+            with open(processor_path, "rb") as f:
+                processor = pickle.load(f)
         else:
-            preprocessor = Preprocessor(type=self.type)
-            preprocessor.prepare_data_letter_by_letter()
-            with open(preprocessor_path, "wb") as f:
-                pickle.dump(preprocessor, f)
+            processor = Processor()
+            processor.process(self.bpe, to_print=True)
+            with open(processor_path, "wb") as f:
+                pickle.dump(processor, f)
 
-        self.ml_vocab_to_index = preprocessor.ml_vocab_to_index
-        self.ml_index_to_vocab = preprocessor.ml_index_to_vocab
-        self.eng_vocab_to_index = preprocessor.eng_vocab_to_index
-        self.eng_index_to_vocab = preprocessor.eng_index_to_vocab
-
-        train_ds = TranslationDataset(
-            src_trg_pairs=preprocessor.eng_mal_valid_sentence_pairs_for_train
-        )
-        val_ds = TranslationDataset(
-            src_trg_pairs=preprocessor.eng_mal_valid_sentence_pairs_for_val
-        )
-
-        test_ds = TranslationDataset(
-            src_trg_pairs=preprocessor.eng_mal_valid_sentence_pairs_for_test
-        )
+        train_ds = TranslationDataset(src_trg_pairs=processor.valid_train_token_pairs)
+        val_ds = TranslationDataset(src_trg_pairs=processor.valid_val_token_pairs)
+        test_ds = TranslationDataset(src_trg_pairs=processor.valid_test_token_pairs)
 
         train_dataloader = DataLoader(
-            train_ds, batch_size=Train.batch_size.value, shuffle=True, drop_last=True
+            train_ds,
+            batch_size=Train.batch_size.value,
+            shuffle=True,
+            drop_last=True,
+            collate_fn=self.get_collate_fn(type="train"),
         )
 
         val_dataloader = DataLoader(
-            val_ds, batch_size=Train.batch_size.value, shuffle=True, drop_last=True
+            val_ds,
+            batch_size=Train.batch_size.value,
+            shuffle=True,
+            drop_last=True,
+            collate_fn=self.get_collate_fn(type="val"),
         )
 
         test_dataloader = DataLoader(
-            test_ds, batch_size=Train.batch_size.value, shuffle=True, drop_last=True
+            test_ds,
+            batch_size=Train.batch_size.value,
+            shuffle=True,
+            drop_last=True,
+            collate_fn=self.get_collate_fn(type="test"),
         )
-        # n = 1
-        # logging.info(f"First {n} batch from training DataLoader")
-        # display_first_n_batch(train_dataloader, n)
-        # logging.info(f"First {n} batch from validation DataLoader")
-        # display_first_n_batch(val_dataloader, n)
-        # logging.info(f"First {n} batch from testing DataLoader")
-        # display_first_n_batch(test_dataloader, n)
+
         return train_dataloader, val_dataloader, test_dataloader
 
     def detockenize(
@@ -448,21 +466,24 @@ class Translator:
         # Inference test on a specific english sentence
         self.transformer.eval()  # no dropout
 
-        eg_ml = ("",)
-        eg_english = ("It was fun coding the transformer from scratch",)
+        eg_ml = ""  # placeholder
+        eg_ml_tokens = [self.special_tokens[self.START_TOKEN]]
+        eg_english = "It was fun coding the transformer from scratch"
 
         with torch.no_grad():  # Disable gradient computation for efficiency
 
-            eg_english_tokenized = self.src_batch_tokenizer(
-                eg_english, start_token=False, end_token=False
+            eg_english_tokens = self.bpe.encode(eg_english)
+
+            eg_english_tokenized = self.batch_padder(
+                [eg_english_tokens], start_token=False, end_token=False
             ).to(
                 self.device
             )  # (1, 300)
 
             for i in range(self.max_seq_length - 1):  # To consider start token
 
-                eg_ml_tokenized = self.tgt_batch_tokenizer(
-                    eg_ml, start_token=True, end_token=False
+                eg_ml_tokenized = self.batch_padder(
+                    [eg_ml_tokens], start_token=True, end_token=False
                 ).to(
                     self.device
                 )  # (1, 300)
@@ -473,8 +494,8 @@ class Translator:
                 ) = self.create_masks(
                     [eg_english_tokenized, eg_ml_tokenized],
                     self.max_seq_length,
-                    self.eng_vocab_to_index[self.PADDING_TOKEN],
-                    self.ml_vocab_to_index[self.PADDING_TOKEN],
+                    self.special_tokens[self.PADDING_TOKEN],
+                    self.special_tokens[self.PADDING_TOKEN],
                 )
 
                 eg_logits = self.transformer(
@@ -489,16 +510,15 @@ class Translator:
                 # next word of ith word's logit - shape is (vocab_size, )
 
                 next_token_index = torch.argmax(next_token_logit_distribution).item()
-                next_token = self.ml_index_to_vocab[next_token_index]
+                eg_ml_tokens.append(next_token_index)
 
-                eg_ml = (eg_ml[0] + next_token,)
-
-                if next_token == self.END_TOKEN:
+                if next_token_index == self.special_tokens[self.END_TOKEN]:
                     break
-            logging.info(f"{eg_english[0]} -> {eg_ml[0]}")
+            eg_ml = self.bpe.decode(eg_ml_tokens[1:])
+            logging.info(f"{eg_english} -> {eg_ml}")
             logging.info("_________________________________________________________")
             self.writer.add_text(
-                "Test Translation", f"Input: {eg_english[0]}\nOutput: {eg_ml[0]}", epoch
+                "Test Translation", f"Input: {eg_english}\nOutput: {eg_ml}", epoch
             )
 
     def get_validation_loss(self):
@@ -507,16 +527,15 @@ class Translator:
 
         with torch.no_grad():  # Disable gradient computation for efficiency
             for batch in self.val_dataloader:
-                src, tgt = batch
+                src, tgt, label = batch
 
-                src_tokenized = self.src_batch_tokenizer(
-                    src, start_token=False, end_token=False
-                ).to(self.device)
+                src.to(self.device)
                 # (64, 300)
 
-                tgt_tokenized = self.tgt_batch_tokenizer(
-                    tgt, start_token=True, end_token=False
-                ).to(self.device)
+                tgt.to(self.device)
+                # (64, 300)
+
+                label.to(self.device)
                 # (64, 300)
 
                 (
@@ -524,28 +543,24 @@ class Translator:
                     decoder_self_attention_mask,
                     decoder_cross_attention_mask,
                 ) = self.create_masks(
-                    (src_tokenized, tgt_tokenized),
+                    (src, tgt),
                     self.max_seq_length,
-                    self.eng_vocab_to_index[self.PADDING_TOKEN],
-                    self.ml_vocab_to_index[self.PADDING_TOKEN],
+                    self.special_tokens[self.PADDING_TOKEN],
+                    self.special_tokens[self.PADDING_TOKEN],
                 )
 
                 logits = self.transformer(
-                    src_tokenized,
-                    tgt_tokenized,
+                    src,
+                    tgt,
                     encoder_self_attention_mask.to(self.device),
                     decoder_cross_attention_mask.to(self.device),
                     decoder_self_attention_mask.to(self.device),
                 ).to(self.device)
 
-                labels = self.tgt_batch_tokenizer(
-                    tgt, start_token=False, end_token=True
-                ).to(self.device)
-
-                loss = self.loss(logits.view(-1, logits.shape[-1]), labels.view(-1))
+                loss = self.loss(logits.view(-1, logits.shape[-1]), label.view(-1))
 
                 non_padding_indices = (
-                    labels.view(-1) != self.ml_vocab_to_index[self.PADDING_TOKEN]
+                    label.view(-1) != self.special_tokens[self.PADDING_TOKEN]
                 ).to(self.device)
 
                 loss = (
