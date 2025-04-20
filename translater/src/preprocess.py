@@ -1,25 +1,27 @@
 import torch
 import torch.nn as nn
 from data.retrieve import Retriever
-from utils.process import is_utf8_encodable
 
-from config.data_dictionary import ROOT, Train, HuggingFaceData, BPE_Enum
-from utils.utils import get_bpe_path
+from config.data_dictionary import HuggingFaceData, BPE_Enum
+from utils.utils import get_bpe_path, get_device
+from utils.process import is_len_valid
 
 from collections import defaultdict
 
 import pickle
 import logging
-from typing import Literal, List, Dict
+from tqdm import tqdm
+from typing import List, Tuple
 from datasets.arrow_dataset import Dataset
 
 
 class Preprocessor:
     """
+    This class is used for BPE training
     - Download the data from HuggingFace
     - Split data as Train/Validation/Test
-    - Save all the files - raw data (Train/Validation/Test)
     - Discard sentence pairs if there is any error on UTF-8 conversion
+    - Save all the files - raw valid data (Train/Validation/Test)
     - Byte Pair Encoding Training (BPE) on training data to generate a vocabulary size of 500 tokens
     - Save the BPE mapping
     - Have a logic to convert sentences into BPE tokens
@@ -27,29 +29,102 @@ class Preprocessor:
     """
 
     def process(self):
-        logging.info("1. Retrive data from hugging face")
+        logging.info(
+            "1. Retrive data from hugging face and get only the valid pairs (utf-8 encodable)"
+        )
         retriever = Retriever()
         logging.info(retriever.train_data)
         logging.info(retriever.val_data)
         logging.info(retriever.test_data)
 
-        logging.info("2. Getting only valid sentence pairs")
-
-        self.valid_train_data = retriever.train_data.filter(is_utf8_encodable)
-        self.valid_val_data = retriever.val_data.filter(is_utf8_encodable)
-        self.valid_test_data = retriever.test_data.filter(is_utf8_encodable)
-        logging.info("After discarding invalid pairs")
-        logging.info(self.valid_train_data)
-        logging.info(self.valid_val_data)
-        logging.info(self.valid_test_data)
-
         logging.info("3. Training & Saving BPE")
-        corpus = create_corpus(self.valid_train_data.select(range(10)))
+        corpus = create_corpus(retriever.train_data)
         bpe = BPE(corpus)
         bpe.train()
         bpe.save_artifacts()
         logging.info(f"Encoding of 'Hello World!': {bpe.encode('Hello World!')}")
         logging.info(f"Decoding back: {bpe.decode(bpe.encode('Hello World!'))}")
+
+
+class Processor:
+    """
+    This class is used before translator training
+    - Retrieve the Train/Validation/Test data
+    - Encode using BPE encoder
+    - Discard if len > max_seq_length in case of src and len > max_seq_length - 1 in case of target(END token to be added in the labels)
+    """
+
+    def __init__(self):
+        # placeholder
+        self.valid_train_token_pairs = None
+        self.valid_val_token_pairs = None
+        self.valid_test_token_pairs = None
+
+    def process(self, bpe: "BPE", to_print: bool = False):
+        logging.info("1. Retrieves data train / val /  test data")
+        retriever = Retriever()
+        self.valid_train_token_pairs = self.get_valid_token_pairs(
+            dataset=retriever.train_data,
+            max_seq_len=HuggingFaceData.max_length.value,
+            total=HuggingFaceData.max_train_size.value,
+            bpe=bpe,
+            to_print=to_print,
+        )
+        self.valid_val_token_pairs = self.get_valid_token_pairs(
+            dataset=retriever.val_data,
+            max_seq_len=HuggingFaceData.max_length.value,
+            total=HuggingFaceData.max_val_size.value,
+            bpe=bpe,
+            to_print=to_print,
+        )
+        self.valid_test_token_pairs = self.get_valid_token_pairs(
+            dataset=retriever.test_data,
+            max_seq_len=HuggingFaceData.max_length.value,
+            total=HuggingFaceData.max_test_size.value,
+            bpe=bpe,
+            to_print=to_print,
+        )
+        logging.info(f"Train data len : {len(self.valid_train_token_pairs)}")
+        logging.info(f"Val data len : {len(self.valid_val_token_pairs)}")
+        logging.info(f"Test data len : {len(self.valid_test_token_pairs)}")
+        return (
+            self.valid_train_token_pairs,
+            self.valid_val_token_pairs,
+            self.valid_test_token_pairs,
+        )
+
+    def get_valid_token_pairs(
+        self,
+        dataset: Dataset,
+        total: int,
+        max_seq_len: int,
+        bpe: "BPE",
+        to_print: bool = False,
+    ) -> List[Tuple[List[int], List[int]]]:
+        """Given Hugging face dataset, return valid token list pairs."""
+        valid_token_pairs = []
+        length_exceeded_count = 0
+
+        for data in tqdm(dataset.select(range(total))):
+            src_tokens = bpe.encode(data["src"])
+            tgt_tokens = bpe.encode(data["tgt"])
+
+            src_len_check = is_len_valid(data["src"], max_seq_len=max_seq_len)
+            tgt_len_check = is_len_valid(
+                data["tgt"], max_seq_len=max_seq_len - 1
+            )  # To account for start/end
+
+            if src_len_check and tgt_len_check:
+                valid_token_pairs.append((src_tokens, tgt_tokens))
+            else:
+                length_exceeded_count += 1
+
+        if to_print:
+            logging.info(
+                f"{length_exceeded_count} no of examples found exceeding max seq length of {max_seq_len} out of total {total} examples."
+            )
+
+        return valid_token_pairs
 
 
 class BPE:
@@ -67,7 +142,7 @@ class BPE:
 
     def train(self):
 
-        for _ in range(self.final_vocab_size - self.initial_vocab_size):
+        for _ in tqdm(range(self.final_vocab_size - self.initial_vocab_size)):
             most_freq_pair = self.get_most_freq_pair()
             if most_freq_pair is None:
                 break
@@ -103,11 +178,14 @@ class BPE:
         new_corpus = []
         for tokens in corpus:
             new_tokens = []
-            for i in range(len(tokens) - 1):
+            i = 0
+            while i < len(tokens) - 1:
                 if (tokens[i], tokens[i + 1]) == most_freq_pair:
                     new_tokens.append(self.map[most_freq_pair])
+                    i += 2
                 else:
                     new_tokens.append(tokens[i])
+                    i += 1
             if len(tokens) > 1 and (tokens[-2], tokens[-1]) != most_freq_pair:
                 new_tokens.append(tokens[-1])
             new_corpus.append(new_tokens)
@@ -131,7 +209,7 @@ class BPE:
 
     def decode(self, tokens: List[int]) -> str:
         tokens = [self.reverse_map[token] for token in tokens]
-        return b"".join(tokens).decode("utf-8")
+        return b"".join(tokens).decode("utf-8", errors="replace")
 
     def save_artifacts(self):
         artifacts = {
@@ -163,44 +241,32 @@ def create_corpus(data: Dataset) -> List[int]:
     return corpus
 
 
-class BatchTokenizer(nn.Module):
+class BatchPadder(nn.Module):
     def __init__(
         self,
         max_seq_length,
-        vocab_to_index,
         START_TOKEN,
         END_TOKEN,
         PADDING_TOKEN,
-        UNKNOWN_TOKEN,
     ):
         super().__init__()
         self.max_seq_length = max_seq_length
-        self.vocab_to_index = vocab_to_index
-        self.vocab_size = len(vocab_to_index)
         self.START_TOKEN = START_TOKEN
         self.END_TOKEN = END_TOKEN
         self.PADDING_TOKEN = PADDING_TOKEN
-        self.UNKNOWN_TOKEN = UNKNOWN_TOKEN
-        self.special_tokens = {
-            self.START_TOKEN,
-            self.END_TOKEN,
-            self.PADDING_TOKEN,
-            self.UNKNOWN_TOKEN,
-        }
 
     def forward(
         self,
-        batch: List[str],
+        batch: List[List[int]],
         start_token: bool = False,
         end_token: bool = False,
     ) -> torch.Tensor:  # (batch, max_sequence_len)
-        """Tokenize in batches"""
+        """Pad the sentence tokens in batches"""
         tokenized_batch = []
-        for sentence in batch:
+        for sentence_tokens in batch:
             tokenized_batch.append(
-                self.tokenize(
-                    sentence,
-                    self.vocab_to_index,
+                self.pad(
+                    sentence_tokens,
                     self.max_seq_length,
                     start_token,
                     end_token,
@@ -209,48 +275,25 @@ class BatchTokenizer(nn.Module):
         tokenized_batch = torch.stack(tokenized_batch)
         return tokenized_batch
 
-    def tokenize(
+    def pad(
         self,
-        sentence: List[str],
-        vocab_to_id: Dict[str, int],
+        tokenized_sentence: List[int],
         max_seq_len: int,
         start_token: bool = False,
         end_token: bool = False,
     ) -> List[int]:
-        """Tokenize a sentence. Optionally add start and end tokens. Always pad with padding token."""
+        """Pad the sentence tokens upto the same max sequence length. Optionally add start and end tokens."""
         tokens = []
         if start_token:
-            tokens = [vocab_to_id[self.START_TOKEN]]
+            tokens = [BPE_Enum.special_tokens.value[self.START_TOKEN]]
 
-        i = 0
-        while i < len(sentence):
-            matched = False
-            # check if sentence at i starts with special token
-            for special_token in self.special_tokens:
-                if sentence[i].startswith(special_token):
-                    # In case of inference, as self.PADDING_TOKEN is part of vocab, output becomes self.PADDING_TOKEN.
-                    # As we use the same output as input, self.PADDING_TOKEN comes as a normal token. In such cases, take it as self.UNKNOWN_TOKEN
-                    id_of_special_token = (
-                        vocab_to_id[special_token]
-                        if special_token != self.PADDING_TOKEN
-                        else vocab_to_id[self.UNKNOWN_TOKEN]
-                    )
-                    tokens.append(id_of_special_token)
-                    i += len(special_token)
-                    matched = True
-                    break
-
-            if not matched:  # If no special token matched, tokenize character-wise
-                tokens.append(
-                    vocab_to_id.get(sentence[i], vocab_to_id[self.UNKNOWN_TOKEN])
-                )
-                i += 1
+        tokens.extend(tokenized_sentence)
 
         if end_token:
-            tokens.append(vocab_to_id[self.END_TOKEN])
+            tokens.append(BPE_Enum.special_tokens.value[self.END_TOKEN])
 
         for _ in range(len(tokens), max_seq_len):
-            tokens.append(vocab_to_id[self.PADDING_TOKEN])
+            tokens.append(BPE_Enum.special_tokens.value[self.PADDING_TOKEN])
 
         # Ensure max sequence length constraint
         tokens = tokens[:max_seq_len]
@@ -263,29 +306,22 @@ class SentenceEmbedding(nn.Module):
         self,
         max_seq_length,
         d_model,
-        vocab_to_index,
         drop_prob,
         PADDING_TOKEN,
     ):
         super().__init__()
         self.max_seq_length = max_seq_length
         self.d_model = d_model  # Embedding dimension
-        self.vocab_to_index = vocab_to_index
         self.drop_prob = drop_prob  # Drop after embedding + pos encoding
         self.PADDING_TOKEN = PADDING_TOKEN
-        self.vocab_size = len(vocab_to_index)
-        self.device = (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
         self.embedding = nn.Embedding(
-            self.vocab_size,
+            BPE_Enum.vocab_size.value + len(BPE_Enum.special_tokens.value),
             self.d_model,
-            padding_idx=vocab_to_index[self.PADDING_TOKEN],
+            padding_idx=BPE_Enum.special_tokens.value[self.PADDING_TOKEN],
         )
-        self.positional_encoder = PositionalEncoder(
-            self.max_seq_length, self.d_model
-        )  # TBD
+        self.positional_encoder = PositionalEncoder(self.max_seq_length, self.d_model)
         self.dropout = nn.Dropout(0.1)
+        self.device = get_device()
         self.to(self.device)
 
     def forward(self, x):
@@ -304,6 +340,8 @@ class PositionalEncoder(nn.Module):
         self.max_seq_len = max_seq_len
         self.d_model = d_model
         self.PE = self.get_encoding()
+        self.device = get_device()
+        self.to(self.device)
 
     def forward(self):
         # x: (batch, max_seq_len, d_model)
