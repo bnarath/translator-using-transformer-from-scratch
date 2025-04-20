@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from data.retrieve import Retriever
+from retrieval.retrieve import Retriever
 
 from config.data_dictionary import HuggingFaceData, BPE_Enum
 from utils.utils import get_bpe_path, get_device

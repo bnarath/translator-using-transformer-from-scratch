@@ -6,7 +6,7 @@ import fsspec
 
 from src.preprocess import Processor, BatchPadder, BPE
 from src.torch_transformer import Transformer
-from data.retrieve import Retriever
+from retrieval.retrieve import Retriever
 from utils.utils import get_device
 
 # from utils.print import display_first_n_batch
