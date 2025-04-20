@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.preprocess import BatchTokenizer, SentenceEmbedding
+from src.preprocess import BatchPadder, SentenceEmbedding
 from config.data_dictionary import Decoder_Enum, Train, HuggingFaceData
 
 
@@ -17,7 +17,6 @@ class Decoder(nn.Module):
         hidden_dim,
         drop_prob,
         max_seq_length,
-        vocab_to_index,
         PADDING_TOKEN,
     ):
         super().__init__()
@@ -27,7 +26,6 @@ class Decoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.drop_prob = drop_prob
         self.max_seq_length = max_seq_length
-        self.vocab_to_index = vocab_to_index
         self.PADDING_TOKEN = PADDING_TOKEN
         self.layers = nn.Sequential(
             *[
@@ -38,12 +36,11 @@ class Decoder(nn.Module):
         self.sentence_embedding = SentenceEmbedding(
             self.max_seq_length,
             self.d_model,
-            self.vocab_to_index,
             self.drop_prob,
             self.PADDING_TOKEN,
         )
 
-    def forward(self, x, y, cross_mask, self_mask, start_token=True, end_token=False):
+    def forward(self, x, y, cross_mask, self_mask):
         # x: 64, 300, 512
         # y: (64, 300)
         # cross_mask: 64, 1, 300, 300
@@ -225,14 +222,18 @@ if __name__ == "__main__":
     from config.data_dictionary import (
         START_TOKEN,
         END_TOKEN,
-        UNKNOWN_TOKEN,
         PADDING_TOKEN,
     )
 
-    fp = ROOT / Path("result/preprocessor.pkl")
+    from src.preprocess import BPE
+
+    fp = ROOT / Path("result/bpe.pkl")
     with open(fp, "rb") as f:
-        preprocessor = pickle.load(f)
-    print(preprocessor.ml_vocab_to_index)
+        bpe_artifacts = pickle.load(f)
+    bpe = BPE(corpus=[])
+    bpe.map = bpe_artifacts["map"]
+    bpe.reverse_map = bpe_artifacts["reverse_map"]
+    bpe.vocab_size = bpe_artifacts["vocab_size"]
 
     # Test
     x = torch.randn(
@@ -308,17 +309,17 @@ if __name__ == "__main__":
         "അവൻ ഒരു വയോധികനെ റോഡ് കടക്കാൻ സഹായിച്ചു.",
     ]
 
-    tgt_batch_tokenizer = BatchTokenizer(
+    batch_tokens = [bpe.encode(sent) for sent in y_batch_sentences]
+
+    tgt_batch_tokenizer = BatchPadder(
         HuggingFaceData.max_length.value,
-        preprocessor.ml_vocab_to_index,
         START_TOKEN,
         END_TOKEN,
         PADDING_TOKEN,
-        UNKNOWN_TOKEN,
     )
 
     y = tgt_batch_tokenizer(
-        y_batch_sentences, start_token=True, end_token=False
+        batch_tokens, start_token=True, end_token=False
     )  # (64, 300)
 
     cross_mask = torch.ones(
@@ -345,8 +346,7 @@ if __name__ == "__main__":
         hidden_dim=Decoder_Enum.hidden_dim.value,
         drop_prob=Decoder_Enum.drop_prob.value,
         max_seq_length=HuggingFaceData.max_length.value,
-        vocab_to_index=preprocessor.ml_vocab_to_index,
         PADDING_TOKEN=PADDING_TOKEN,
     )
-    out = decoder(x, y, cross_mask, self_mask, start_token=True, end_token=False)
+    out = decoder(x, y, cross_mask, self_mask)
     print(out.shape)
