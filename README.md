@@ -183,8 +183,11 @@ If you use this project or related methods, please cite the [original Transforme
   - Perform BPE training using the training data.
   - Save the BPE vocabulary map, reverse map, and related files for later use.
 
-- Step1: Translator.build()
-  - tbd
+- Step2: Translator.build()
+  - Retrieved the train/val/test data
+  - Does batching/tokenize
+  - Pass through transformer architecture
+  - Does the training / validation
 
 
 ## 5. To Run:
