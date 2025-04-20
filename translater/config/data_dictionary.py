@@ -10,7 +10,6 @@ ROOT = Path(__file__).parent.parent.parent
 START_TOKEN = "<START>"
 END_TOKEN = "<END>"
 PADDING_TOKEN = "<PAD>"
-UNKNOWN_TOKEN = "<UNK>"
 NEG_INFINITY = -1e20
 
 
@@ -32,11 +31,17 @@ class HuggingFaceData(Enum):
     max_train_size = 1000000
     max_val_size = 100000
     max_test_size = 100000
+    preprocessor_file = "result/preprocessor.pkl"
 
 
 class BPE_Enum(Enum):
     vocab_size = 500
     bpe_file = "result/bpe.pkl"  # contains vocab_size, map, reverse_map as dict
+    special_tokens = {
+        "<PAD>": 501,
+        "<START>": 500,
+        "<END>": 502,
+    }
 
 
 class Train(Enum):

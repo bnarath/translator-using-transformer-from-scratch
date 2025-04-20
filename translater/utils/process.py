@@ -1,4 +1,3 @@
-from config.data_dictionary import HuggingFaceData
 from typing import List
 
 
@@ -10,3 +9,8 @@ def is_utf8_encodable(example):
         return True
     except UnicodeEncodeError:
         return False
+
+
+def is_len_valid(tokens: List, max_seq_len: int):
+    "Check if total len of tokens are within the limit"
+    return True if len(tokens) <= max_seq_len else False

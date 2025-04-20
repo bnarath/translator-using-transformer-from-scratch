@@ -1,6 +1,6 @@
 from pathlib import Path
 import torch
-from config.data_dictionary import ROOT, Train, BPE_Enum
+from config.data_dictionary import ROOT, Train, BPE_Enum, HuggingFaceData
 
 
 def get_checkpoint_path():
@@ -24,6 +24,12 @@ def get_log_dir():
 
 def get_bpe_path():
     path = ROOT / Path(BPE_Enum.bpe_file.value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_preprocessor_path():
+    path = ROOT / Path(HuggingFaceData.preprocessor_file.value)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
