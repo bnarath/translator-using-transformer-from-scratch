@@ -5,9 +5,8 @@ import logging
 
 if __name__ == "__main__":
     logging.getLogger().setLevel(logging.INFO)
+    preprocessor = Preprocessor()
+    preprocessor.process()
 
-    # preprocessor = Preprocessor()
-    # preprocessor.process()
-
-    # translator = Translator()
-    # translator.build()
+    translator = Translator()
+    translator.build()
