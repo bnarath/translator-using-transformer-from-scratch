@@ -71,7 +71,7 @@ If you use this project or related methods, please cite the [original Transforme
 ### Key Layers & Features used across Encoder and Decoder
 
 - **Embedding Layer:**
-  - The input tokens are converted into 512-dimensional vectors using an embedding layer with learnable weights. The embedding dimension is defined as $d_{model} = 512$.
+  - The input tokens are converted into 512-dimensional vectors using an embedding layer with learnable weights. The embedding dimension is defined as $d_{model} = 512$. Total vectors = Total vocabulary size = Total Tokens (500) + Num of Special Tokens (3).
 
 - **Positional Encoding:**
   - Positional encoding is added to the input embeddings to provide information about the position of tokens in the sequence. 
@@ -84,7 +84,7 @@ If you use this project or related methods, please cite the [original Transforme
   - $pos$ is the position of the token in the sequence (starting from 0).
   - $i$ is the index of the dimension (for each position in the encoding vector).
   - $d$ is the total dimensionality of the positional encoding (same as the embedding dimension = $512$).
-
+  This is similar to sampling d waveforms of decreasing frequencies at max sequence length positions.
 
 - **Multi-Head Attention:**
   - The attention mechanism allows the model to focus on different parts of the input sequence. This model uses 8 attention heads. It is similar to where to focus on different aspect of language. 
@@ -102,7 +102,7 @@ If you use this project or related methods, please cite the [original Transforme
     - $K$: Key matrix (What do I have). 
     - $V$: VAlue matrix (What do I offer)
 
-      - The size of $Q$, $K$ and $V$ is: $[batch\_size, num\_heads, seq\_len, d_k]$
+      - The size of $Q$, $K$ and $V$ is:[batch\_size, num\_heads, seq\_len, $d_k$]
     
     - The softmax function is applied to ensure the attention weights sum to 1.
 
