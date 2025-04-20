@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.preprocess import BatchTokenizer
+from src.preprocess import BatchPadder
 from src.torch_encoder import Encoder
 from src.torch_decoder import Decoder
-from config.data_dictionary import START_TOKEN, END_TOKEN, PADDING_TOKEN, UNKNOWN_TOKEN
+from config.data_dictionary import START_TOKEN, END_TOKEN, PADDING_TOKEN, BPE_Enum
 
 
 class Transformer(nn.Module):
@@ -17,12 +17,12 @@ class Transformer(nn.Module):
         hidden_dim,  # FFW hidden layer dimension in both encoder and decoder
         drop_prob,  # Dropout probability in both Encoder and Decoder (Same across any droput layer)
         max_seq_length,  # Maximum sequence length, same in both Src and Target
-        src_vocab_to_index,  # Mapping of src language vocab to index
-        tgt_vocab_to_index,  # Mapping of tgt language  vocab to index
         PADDING_TOKEN,  # Padded to max sequence length
     ):
         super().__init__()
-        self.target_vocab_size = len(tgt_vocab_to_index)
+        self.target_vocab_size = BPE_Enum.vocab_size.value + len(
+            BPE_Enum.special_tokens.value
+        )
 
         self.encoder = Encoder(
             num_layers,
@@ -31,7 +31,6 @@ class Transformer(nn.Module):
             hidden_dim,
             drop_prob,
             max_seq_length,
-            src_vocab_to_index,
             PADDING_TOKEN,
         )
         self.decoder = Decoder(
@@ -41,12 +40,11 @@ class Transformer(nn.Module):
             hidden_dim,
             drop_prob,
             max_seq_length,
-            tgt_vocab_to_index,
             PADDING_TOKEN,
         )
         self.linear = nn.Linear(d_model, self.target_vocab_size)
-        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # self.to(self.device)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(self.device)
 
     def forward(
         self,
@@ -63,16 +61,12 @@ class Transformer(nn.Module):
         encoder_output = self.encoder(
             src,
             encoder_self_attention_mask,
-            start_token=enc_start_token,
-            end_token=enc_end_token,
         )  # (batch, max seq len, d_model)
         decoder_output = self.decoder(
             encoder_output,
             tgt,
             decoder_encoder_cross_attention_mask,
             decoder_self_attention_mask,
-            start_token=dec_start_token,
-            end_token=dec_end_token,
         )  # (batch, max seq len, d_model)
 
         output = self.linear(
@@ -89,16 +83,20 @@ if __name__ == "__main__":
     from config.data_dictionary import ROOT
     from pathlib import Path
     from config.data_dictionary import (
-        Encoder_Enum,
         Decoder_Enum,
         Train,
         HuggingFaceData,
     )
 
-    fp = ROOT / Path("result/preprocessor.pkl")
+    from src.preprocess import BPE
+
+    fp = ROOT / Path("result/bpe.pkl")
     with open(fp, "rb") as f:
-        preprocessor = pickle.load(f)
-    print(preprocessor.ml_vocab_to_index)
+        bpe_artifacts = pickle.load(f)
+    bpe = BPE(corpus=[])
+    bpe.map = bpe_artifacts["map"]
+    bpe.reverse_map = bpe_artifacts["reverse_map"]
+    bpe.vocab_size = bpe_artifacts["vocab_size"]
 
     _x = [
         "The cat is sleeping.",
@@ -167,16 +165,18 @@ if __name__ == "__main__":
         "He helped an old man cross the street.",
     ]
 
-    src_batch_tokenizer = BatchTokenizer(
+    x_batch_tokens = [bpe.encode(sent) for sent in _x]
+
+    src_batch_tokenizer = BatchPadder(
         HuggingFaceData.max_length.value,
-        preprocessor.eng_vocab_to_index,
         START_TOKEN,
         END_TOKEN,
         PADDING_TOKEN,
-        UNKNOWN_TOKEN,
     )
 
-    x = src_batch_tokenizer(_x, start_token=False, end_token=False)  # (64, 300)
+    x = src_batch_tokenizer(
+        x_batch_tokens, start_token=False, end_token=False
+    )  # (64, 300)
 
     _y = [
         "പൂച്ച ഉറങ്ങുകയാണ്.",
@@ -245,16 +245,18 @@ if __name__ == "__main__":
         "അവൻ ഒരു വയോധികനെ റോഡ് കടക്കാൻ സഹായിച്ചു.",
     ]
 
-    tgt_batch_tokenizer = BatchTokenizer(
+    y_batch_tokens = [bpe.encode(sent) for sent in _y]
+
+    tgt_batch_tokenizer = BatchPadder(
         HuggingFaceData.max_length.value,
-        preprocessor.ml_vocab_to_index,
         START_TOKEN,
         END_TOKEN,
         PADDING_TOKEN,
-        UNKNOWN_TOKEN,
     )
 
-    y = tgt_batch_tokenizer(_y, start_token=True, end_token=False)  # (64, 300)
+    y = tgt_batch_tokenizer(
+        y_batch_tokens, start_token=True, end_token=False
+    )  # (64, 300)
 
     encoder_self_mask = torch.ones(
         Train.batch_size.value,
@@ -287,8 +289,6 @@ if __name__ == "__main__":
         hidden_dim=Decoder_Enum.hidden_dim.value,
         drop_prob=Decoder_Enum.drop_prob.value,
         max_seq_length=HuggingFaceData.max_length.value,
-        src_vocab_to_index=preprocessor.eng_vocab_to_index,  # Mapping of src language vocab to index
-        tgt_vocab_to_index=preprocessor.ml_vocab_to_index,  # Mapping of tgt language  vocab to index
         PADDING_TOKEN=PADDING_TOKEN,
     )
 
